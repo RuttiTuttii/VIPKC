@@ -1,0 +1,144 @@
+# docker compose для развертывания хостинга git-репозиториев gitea с субд mysql
+# задание 4: многоконтейнерное приложение с сетевой изоляцией базы данных
+
+services:
+  # сервис реляционной субд mysql
+  gitea-db:
+    # фиксированная неизменяемая версия mysql lts
+    image: mysql:8.4.4
+    container_name: vipkc_gitea_mysql
+    restart: unless-stopped
+
+    # переменные окружения инициализации субд
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-mysql_super_root_password_2026}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-gitea}
+      MYSQL_USER: ${MYSQL_USER:-gitea_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-gitea_secure_password_2026}
+      TZ: ${TIMEZONE:-Europe/Moscow}
+
+    # постоянное хранилище для данных бд
+    volumes:
+      - gitea_mysql_data:/var/lib/mysql
+
+    # принцип минимального доступа: субд подключена ТОЛЬКО к изолированной backend-сети
+    # порты на хост не пробрасываются (защита от несанкционированного доступа снаружи)
+    networks:
+      - gitea_backend
+
+    # проверка готовности субд принимать подключения
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u $$MYSQL_USER -p$$MYSQL_PASSWORD || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+    # лимиты системных ресурсов
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+        reservations:
+          cpus: "0.20"
+          memory: 256M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # веб-сервис gitea
+  gitea-app:
+    # фиксированная неизменяемая версия gitea
+    image: gitea/gitea:1.22.6
+    container_name: vipkc_gitea_server
+    restart: unless-stopped
+
+    # строгая зависимость: запуск только после успешного прохождения healthcheck бд
+    depends_on:
+      gitea-db:
+        condition: service_healthy
+
+    # конфигурация подключения к субд и системные настройки
+    environment:
+      - USER_UID=${USER_UID:-1000}
+      - USER_GID=${USER_GID:-1000}
+      - GITEA__database__DB_TYPE=mysql
+      - GITEA__database__HOST=gitea-db:3306
+      - GITEA__database__NAME=${MYSQL_DATABASE:-gitea}
+      - GITEA__database__USER=${MYSQL_USER:-gitea_user}
+      - GITEA__database__PASSWD=${MYSQL_PASSWORD:-gitea_secure_password_2026}
+      - GITEA__server__DOMAIN=localhost
+      - GITEA__server__SSH_PORT=${GITEA_SSH_PORT:-4422}
+      - GITEA__server__ROOT_URL=http://localhost:${GITEA_HTTP_PORT:-4430}/
+      - TZ=${TIMEZONE:-Europe/Moscow}
+
+    # тома для репозиториев, конфигурации gitea и ssh-ключей
+    volumes:
+      - gitea_app_data:/data
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+
+    # проброс портов: уникальные порты для избежания коллизий
+    ports:
+      - "${GITEA_HTTP_PORT:-4430}:3000"
+      - "${GITEA_SSH_PORT:-4422}:22"
+
+    # gitea подключена к frontend-сети (для клиентов) и backend-сети (для бд)
+    networks:
+      - gitea_frontend
+      - gitea_backend
+
+    # проверка доступности веб-интерфейса gitea
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:3000/api/v1/version || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+        reservations:
+          cpus: "0.20"
+          memory: 128M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# разделение сетей по принципу наименьших привилегий
+networks:
+  # внешняя сеть: доступна с хоста через опубликованные порты
+  gitea_frontend:
+    name: vipkc_gitea_frontend
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.20.0/24
+
+  # изолированная внутренняя сеть: без доступа во внешний мир и без выхода наружу
+  gitea_backend:
+    name: vipkc_gitea_backend
+    driver: bridge
+    internal: true
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.21.0/24
+
+# постоянные именованные тома
+volumes:
+  gitea_mysql_data:
+    name: vipkc_gitea_mysql_data
+  gitea_app_data:
+    name: vipkc_gitea_app_data

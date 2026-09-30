@@ -1,0 +1,124 @@
+# docker compose для phppgadmin и postgresql с сетевой изоляцией
+# задание 8: межконтейнерное взаимодействие и преодоление ограничений scram-sha-256 / extra_login_security
+
+services:
+  # сервис субд postgresql
+  postgres-server:
+    # фиксированная неизменяемая версия lts
+    image: postgres:13.18-alpine
+    container_name: vipkc_pg_postgres
+    restart: unless-stopped
+
+    # совместимость со старыми клиентами: используем алгоритм шифрования паролей md5
+    command: postgres -c password_encryption=md5
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-college_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_secure_pass_2026}
+      TZ: ${TIMEZONE:-Europe/Moscow}
+
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+    # изоляция базы данных: доступна только внутри изолированной сети
+    # порт 5432 на хост НЕ пробрасывается
+    networks:
+      - pg_db_internal
+
+    # штатная проверка готовности postgresql принимать подключения
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+        reservations:
+          cpus: "0.20"
+          memory: 256M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # веб-интерфейс администрирования phppgadmin
+  phppgadmin:
+    image: dockage/phppgadmin:latest
+    container_name: vipkc_pg_admin
+    restart: unless-stopped
+
+    depends_on:
+      postgres-server:
+        condition: service_healthy
+
+    # тонкая настройка параметров phppgadmin:
+    # 1. отключение extra_login_security разрешает вход под суперпользователем postgres
+    # 2. owned_only=false разрешает просмотр всех таблиц и схем
+    environment:
+      - PHP_PG_ADMIN_SERVER_HOST=postgres-server
+      - PHP_PG_ADMIN_SERVER_PORT=5432
+      - PHP_PG_ADMIN_SERVER_DEFAULT_DB=${POSTGRES_DB:-college_db}
+      - PHP_PG_ADMIN_OWNED_ONLY=false
+      - PHP_PG_ADMIN_EXTRA_LOGIN_SECURITY=false
+      - TZ=${TIMEZONE:-Europe/Moscow}
+
+    # публикация уникального внешнего порта 4482
+    ports:
+      - "${PHPPGADMIN_PORT:-4482}:80"
+
+    networks:
+      - pg_public_net
+      - pg_db_internal
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:80/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.10"
+          memory: 64M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# разделение сетей
+networks:
+  pg_public_net:
+    name: vipkc_pg_public_net
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.60.0/24
+
+  pg_db_internal:
+    name: vipkc_pg_db_internal
+    driver: bridge
+    internal: true
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.61.0/24
+
+volumes:
+  pg_data:
+    name: vipkc_pg_data

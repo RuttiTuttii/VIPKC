@@ -1,0 +1,130 @@
+# docker compose для phpmyadmin и mysql с межконтейнерной сетевой изоляцией
+# задание 7: реализация принципа минимального доступа через internal: true
+
+services:
+  # сервис субд mysql
+  mysql-server:
+    # фиксированная версия mysql lts
+    image: mysql:8.4.4
+    container_name: vipkc_pma_mysql
+    restart: unless-stopped
+
+    # переменные окружения для инициализации базы данных
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-pma_root_secure_pass_2026}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-app_database}
+      MYSQL_USER: ${MYSQL_USER:-student}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-student_secret_pass_2026}
+      TZ: ${TIMEZONE:-Europe/Moscow}
+
+    # постоянный том для сохранности реляционных данных
+    volumes:
+      - pma_mysql_data:/var/lib/mysql
+
+    # принцип наименьших привилегий:
+    # бд подключена ТОЛЬКО во внутреннюю сеть, доступную только для phpmyadmin.
+    # порт 3306 НЕ опубликован на хосте для защиты от сетевого сканирования.
+    networks:
+      - pma_db_internal
+
+    # проверка готовности принимать sql-запросы
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u $$MYSQL_USER -p$$MYSQL_PASSWORD || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+        reservations:
+          cpus: "0.20"
+          memory: 256M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # веб-клиент администрирования phpmyadmin
+  phpmyadmin:
+    # фиксированная неизменяемая версия phpmyadmin
+    image: phpmyadmin:5.2.2-apache
+    container_name: vipkc_pma_web
+    restart: unless-stopped
+
+    # запуск web-интерфейса только после подтверждения здоровья субд
+    depends_on:
+      mysql-server:
+        condition: service_healthy
+
+    # конфигурация подключения к серверу mysql по сетевому dns-алиасу сервиса
+    environment:
+      PMA_HOST: mysql-server
+      PMA_PORT: 3306
+      PMA_USER: ${MYSQL_USER:-student}
+      PMA_PASSWORD: ${MYSQL_PASSWORD:-student_secret_pass_2026}
+      UPLOAD_LIMIT: 64M
+      MEMORY_LIMIT: 256M
+      TZ: ${TIMEZONE:-Europe/Moscow}
+
+    # проброс уникального внешнего порта 4481
+    ports:
+      - "${PMA_PORT:-4481}:80"
+
+    # phpmyadmin входит в обе сети: публичную (для браузера) и закрытую (для бд)
+    networks:
+      - pma_public_net
+      - pma_db_internal
+
+    # проверка доступности веб-интерфейса
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:80/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.10"
+          memory: 64M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# разделение сетей по уровням доступа
+networks:
+  # внешняя мостовая сеть (frontend)
+  pma_public_net:
+    name: vipkc_pma_public_net
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.50.0/24
+
+  # внутренняя изолированная сеть (backend) с запретом внешнего трафика
+  pma_db_internal:
+    name: vipkc_pma_db_internal
+    driver: bridge
+    internal: true
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.51.0/24
+
+volumes:
+  pma_mysql_data:
+    name: vipkc_pma_mysql_data

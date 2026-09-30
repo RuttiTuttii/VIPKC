@@ -1,0 +1,71 @@
+# docker compose для управления файловым сервером filebrowser
+# задание 6: запуск от непривилегированного пользователя с уникальным портом 4444
+
+services:
+  filebrowser:
+    # фиксированная неизменяемая версия официального образа
+    image: filebrowser/filebrowser:v2.63.23
+    container_name: vipkc_filebrowser
+    restart: unless-stopped
+
+    # задание 2: запуск контейнера от uid/gid текущего пользователя хоста
+    # предотвращает появление файлов под root-пользователем на хостовой системе
+    user: "${UID:-1000}:${GID:-1000}"
+
+    # проброс уникального внешнего порта 4444 (защита от коллизий на общем сервере)
+    ports:
+      - "${FILEBROWSER_PORT:-4444}:80"
+
+    # переменные окружения
+    environment:
+      - TZ=${TIMEZONE:-Europe/Moscow}
+      - FB_DATABASE=/database/filebrowser.db
+      - FB_ROOT=/srv
+      - FB_CONFIG=/config/settings.json
+
+    # привязка файлов конфигурации, базы данных и рабочей директории
+    volumes:
+      - ./srv:/srv:rw
+      - filebrowser_db:/database
+      - ./settings.json:/config/settings.json:ro
+
+    # проверка жизнеспособности сервиса
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:80/health || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+    # ограничение потребляемых ресурсов
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.10"
+          memory: 64M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    networks:
+      - filebrowser_net
+
+# мостовая сеть
+networks:
+  filebrowser_net:
+    name: vipkc_filebrowser_net
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.40.0/24
+
+volumes:
+  filebrowser_db:
+    name: vipkc_filebrowser_db

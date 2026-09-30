@@ -1,0 +1,129 @@
+# docker compose для adminer и субд mariadb с кастомным скином оформления и сетевой изоляцией
+# задания 9 и 10: смена дизайна через dockerhub/github и изоляция базы данных
+
+services:
+  # сервис субд mariadb
+  database:
+    # фиксированная неизменяемая версия mariadb
+    image: mariadb:11.4.5
+    container_name: vipkc_adminer_db
+    restart: unless-stopped
+
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-adminer_root_pass_2026}
+      MARIADB_DATABASE: ${MARIADB_DATABASE:-production_db}
+      MARIADB_USER: ${MARIADB_USER:-adminer_user}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-adminer_secure_pass_2026}
+      TZ: ${TIMEZONE:-Europe/Moscow}
+
+    volumes:
+      - adminer_db_data:/var/lib/mysql
+
+    # принцип наименьших привилегий: база находится только в закрытой сети
+    # порт 3306 на хост НЕ пробрасывается
+    networks:
+      - adminer_db_internal
+
+    # проверка готовности субд отвечать на запросы
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -u $$MARIADB_USER -p$$MARIADB_PASSWORD || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+        reservations:
+          cpus: "0.20"
+          memory: 256M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # веб-клиент администрирования adminer с кастомным оформлением
+  adminer:
+    # базовый официальный образ с фиксированной версией
+    image: adminer:4.8.1
+    container_name: vipkc_adminer_ui
+    restart: unless-stopped
+
+    # сборка кастомного образа с зашитой темой при необходимости
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    depends_on:
+      database:
+        condition: service_healthy
+
+    environment:
+      ADMINER_DEFAULT_SERVER: database
+      TZ: ${TIMEZONE:-Europe/Moscow}
+
+    # задание 10: подключение скинчика через volume mount в соответствии с документацией dockerhub
+    # альтернативно тема может быть вшита в образ через предоставленный Dockerfile
+    volumes:
+      - ./themes/adminer.css:/var/www/html/adminer.css:ro
+
+    # проброс уникального внешнего порта 4483 на внутренний порт 8080 adminer
+    ports:
+      - "${ADMINER_PORT:-4483}:8080"
+
+    # подключение к публичной сети (для доступа из браузера) и закрытой (для доступа к бд)
+    networks:
+      - adminer_public_net
+      - adminer_db_internal
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.10"
+          memory: 64M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# разделение сетей
+networks:
+  # внешняя сеть для пользователей
+  adminer_public_net:
+    name: vipkc_adminer_public_net
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.70.0/24
+
+  # строго закрытая сеть для взаимодействия с базой данных
+  adminer_db_internal:
+    name: vipkc_adminer_db_internal
+    driver: bridge
+    internal: true
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.71.0/24
+
+volumes:
+  adminer_db_data:
+    name: vipkc_adminer_db_data

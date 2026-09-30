@@ -1,0 +1,68 @@
+# docker compose для развертывания домашней панели flame dashboard
+# задание 5: безопасная интеграция с docker сокетом в режиме только для чтения
+
+services:
+  flame:
+    # фиксированная неизменяемая версия flame
+    image: pawelmalak/flame:2.3.1
+    container_name: vipkc_flame_dashboard
+    restart: unless-stopped
+
+    # публикация уникального порта веб-интерфейса дашборда на хосте
+    ports:
+      - "${FLAME_PORT:-4455}:5005"
+
+    # переменные окружения для защиты веб-панели и сессий
+    environment:
+      - PASSWORD=${FLAME_PASSWORD:-flame_super_secret_password_2026}
+      - SESSION_SECRET=${FLAME_SESSION_SECRET:-long_random_session_secret_string_flame_2026}
+      - TZ=${TIMEZONE:-Europe/Moscow}
+
+    # тома данных и принцип наименьших привилегий для сокета хоста
+    volumes:
+      # постоянные данные и закладки приложения
+      - flame_data:/app/data
+      # сокет docker проброшен ТОЛЬКО в режиме чтения (:ro) для автообнаружения контейнеров
+      # запрещает контейнеру отправлять команды на создание/удаление других контейнеров
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+    # проверка состояния доступности сервиса
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:5005/ || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+    # лимиты ресурсов
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.10"
+          memory: 64M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    networks:
+      - flame_net
+
+# мостовая сеть для изоляции сервиса flame
+networks:
+  flame_net:
+    name: vipkc_flame_net
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.30.0/24
+
+volumes:
+  flame_data:
+    name: vipkc_flame_data

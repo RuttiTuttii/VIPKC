@@ -1,0 +1,63 @@
+# docker compose для управления проектом игры 2048
+# задание 3: использование образа из собственного реестра образов (ruttituttii/2048:1.0.0)
+
+services:
+  game-2048:
+    # неизменяемый тег образа из собственного пространства имен
+    image: ruttituttii/2048:1.0.0
+    container_name: vipkc_game_2048
+    restart: unless-stopped
+
+    # сборка из локального контекста, если образа нет в локальном кэше
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    # проброс портов: уникальный внешний порт 4448 мапится на 80 в контейнере
+    ports:
+      - "${GAME_PORT:-4448}:80"
+
+    # переменные окружения для приложения
+    environment:
+      - TZ=${TIMEZONE:-Europe/Moscow}
+      - VIRTUAL_HOST=2048.local
+
+    # ограничение аппаратных ресурсов для безопасности хоста
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+        reservations:
+          cpus: "0.10"
+          memory: 32M
+
+    # проверка состояния контейнера (healthcheck)
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:80/healthz || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+    # ротация и ограничение размера журналов контейнера
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # подключение к изолированной пользовательской мостовой сети
+    networks:
+      - game_net
+
+# явное описание пользовательской сети с указанием подсети
+networks:
+  game_net:
+    name: vipkc_game_net
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.10.0/24
+          gateway: 172.28.10.1
