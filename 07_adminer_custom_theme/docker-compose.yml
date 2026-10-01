@@ -82,7 +82,7 @@ services:
       - adminer_db_internal
 
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8080/ || exit 1"]
+      test: ["CMD-SHELL", "php -r \"exit(@fsockopen('127.0.0.1', 8080) ? 0 : 1);\""]
       interval: 15s
       timeout: 5s
       retries: 3
