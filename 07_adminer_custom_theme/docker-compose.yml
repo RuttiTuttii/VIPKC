@@ -16,6 +16,7 @@ services:
       MARIADB_PASSWORD: ${MARIADB_PASSWORD:-adminer_secure_pass_2026}
       TZ: ${TIMEZONE:-Europe/Moscow}
 
+    command: ["mariadbd", "--performance-schema=OFF", "--innodb-buffer-pool-size=32M"]
     volumes:
       - adminer_db_data:/var/lib/mysql
 
